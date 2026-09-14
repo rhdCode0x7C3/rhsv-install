@@ -1,0 +1,4 @@
+(executable
+ (public_name rhsv-install)
+ (name main)
+ (libraries rhsv_install))
