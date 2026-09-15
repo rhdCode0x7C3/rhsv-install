@@ -21,7 +21,7 @@
  (description "Void Linux installer for rhsv")
  (depends
   (ocaml
-   (>= 5.4.1))
+   (>= 5.6.0))
   ;; Dev setup
   (utop :with-dev-setup)
   (ocamlformat :with-dev-setup)

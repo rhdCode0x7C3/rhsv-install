@@ -1,2 +1,3 @@
 (library
- (name rhsv_install))
+ (name rhsv_install)
+ (libraries unix))
