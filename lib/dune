@@ -1,4 +1,3 @@
 (library
  (name rhsv_install)
- (libraries unix)
- )
+ (libraries unix rh-path))

@@ -20,7 +20,9 @@
  (synopsis "Void Linux installer for rhsv")
  (description "Void Linux installer for rhsv")
  (depends
-  (ocaml (>= 5.2.0))
+  (ocaml
+   (>= 5.2.0))
+  (rh-path (>= 0.0.3))
   ;; Dev setup
   (utop :with-dev-setup)
   (ocamlformat :with-dev-setup)
