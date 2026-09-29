@@ -1,1 +1,1 @@
-let () = print_endline (Hardware.Disk.lsblk ())
+let () = print_endline "Hi there"

@@ -1,6 +1,3 @@
-open Rh_path
-
-type disk = Path.t
-type partition = Path.t
-type mount_opts = partition * string list
-type t = { disk : disk; partitions : partition list; mount_opts : mount_opts }
+type p_type = EFI | Linux_fs
+type partition = { n : int; size : int; (* size in GiB *) p_type : p_type }
+type mount_opts = string list

@@ -1,3 +1,0 @@
-(library
- (name hardware)
- (libraries unix))
