@@ -2,3 +2,8 @@
  (public_name rhsv-install)
  (name main)
  (libraries rhsv_install))
+
+(executable
+ (public_name rhsv-vm)
+ (name vm)
+ (libraries rhsv_vm))

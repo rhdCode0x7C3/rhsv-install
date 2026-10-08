@@ -1,0 +1,3 @@
+(library
+ (name rhsv_vm)
+ (libraries rh-path ezcurl re sha))

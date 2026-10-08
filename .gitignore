@@ -27,3 +27,6 @@ _opam
 .envrc
 .env
 .direnv/
+
+# Virtual machine files
+vm/

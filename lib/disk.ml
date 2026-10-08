@@ -25,4 +25,6 @@ let get () =
   let devices = payload |> member "blockdevices" |> to_list in
   List.map disk_of_json devices
 
+(* let path_of_id id = *)
+
 let select l = User_input.select l pp

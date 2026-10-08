@@ -66,3 +66,29 @@ Input: none
 Side effects: xbps-reconfigure
 Output: Result.t with no data
 
+
+Okay let's take a step back
+The project:
+Preconfigured Linux installer written in OCaml.
+
+The finished result:
+Computer boots from a Void Linux ISO
+Run my executable -> Void Linux is installed on the host system with my config
+Bare minimum of services for a useable system I can SSH into
+
+MVP:
+Boot up from ISO
+Run the executable
+Select a disk
+No further user interaction
+Linux is installed and configured
+Config can be written in OCaml and baked into the executable
+
+The pieces:
+Interaction with the host hardware - get data from lsblk, write to sfdisk, fstab
+etc
+UI for the user to select an installation disk (command line argument?)
+Logging output for the user
+Generation of a "system manifest" as an artefact of running the installer
+Idempotency - stop/resume logic
+Crossing the chroot boundary
