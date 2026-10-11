@@ -1,10 +1,7 @@
 module List = ListLabels
 
-let void_url = ""
-
-let checksum_url =
-  String.concat "https://repo-default.voidlinux.org/live/current/"
-    [ void_url; "sha256sum.txt" ]
+let void_url = "https://repo-default.voidlinux.org/live/current/"
+let checksum_url = void_url ^ "sha256sum.txt"
 
 let iso_re =
   Re.compile (Re.Pcre.re "(void-live-x86_64-\\d{8}-base\\.iso).{4}(.*)")
@@ -13,16 +10,16 @@ type error =
   | Parser of string
   | Checksum_mismatch of Sha256.t * Sha256.t
   | Download_failed of int * string
-  | Sys_error of string
+  | System of string
 
 let pp_error fmt = function
   | Parser s -> Format.fprintf fmt "Parser error:\n%s\n" s
   | Checksum_mismatch (a, b) ->
-      Format.fprintf fmt "\nChecksum mismatch:\n\n%s\n\n%s\n\n  "
+      Format.fprintf fmt "Checksum mismatch:\n Expected: %s\n Got:      %s\n"
         (Sha256.to_hex a) (Sha256.to_hex b)
   | Download_failed (code, s) ->
       Format.fprintf fmt "Download failed with code %d: %s\n" code s
-  | Sys_error s -> Format.fprintf fmt "Sys_error: %s\n" s
+  | System s -> Format.fprintf fmt "Sys_error: %s\n" s
 
 let ( let* ) = Result.bind
 
@@ -58,7 +55,7 @@ let check_iso name checksum =
   | v ->
       if Sha256.equal v url_cs then Ok ()
       else Error (Checksum_mismatch (url_cs, v))
-  | exception Sys_error s -> Error (Sys_error s)
+  | exception Sys_error s -> Error (System s)
 
 let fetch_iso name checksum =
   Format.printf "Fetching ISO\n";
@@ -82,4 +79,6 @@ let run () =
   let* name, checksum = name_and_checksum txt in
   match check_iso name checksum with
   | Ok () -> Ok ()
-  | Error _ -> fetch_iso name checksum
+  | Error (Checksum_mismatch _) -> fetch_iso name checksum
+  | Error (System s) -> failwith (Format.asprintf "Fatal error: %s" s)
+  | _ -> failwith (Format.asprintf "Fatal error")
