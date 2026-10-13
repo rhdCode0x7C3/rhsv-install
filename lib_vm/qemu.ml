@@ -25,27 +25,29 @@ let rng_opts = ("device", [ V "virtio-rng-pci" ])
 let rtc_opts = ("rtc", [ KV ("base", "utc"); KV ("clock", "host") ])
 let nic_opts = ("nic", [ V "user"; KV ("hostfwd", "tcp::2222-:22") ])
 
-let proto_disk_opts img =
-  ( "blockdev",
-    [
-      KV ("driver", "file");
-      KV ("node-name", "proto_disk");
-      KV ("filename", img);
-      KV ("cache.direct", "on");
-    ] )
+(* let proto_disk_opts ~img = *)
+(*   let open Rh_path in *)
+(*   ( "blockdev", *)
+(*     [ *)
+(*       KV ("driver", "file"); *)
+(*       KV ("node-name", "proto_disk"); *)
+(*       KV ("filename", Path.to_string img); *)
+(*       KV ("cache.direct", "on"); *)
+(*     ] ) *)
 
-let vm_opts img =
-  List.flatten
-    (List.map ~f:mk_flag_opts
-       [
-         machine_opts;
-         cpu_opts;
-         smp_opts;
-         m_opts;
-         scsi_opts;
-         hd_opts;
-         rng_opts;
-         rtc_opts;
-         nic_opts;
-         proto_disk_opts img;
-       ])
+let vm_opts () =
+  Ok
+    (List.flatten
+       (List.map ~f:mk_flag_opts
+          [
+            machine_opts;
+            cpu_opts;
+            smp_opts;
+            m_opts;
+            scsi_opts;
+            hd_opts;
+            rng_opts;
+            rtc_opts;
+            nic_opts;
+            (* proto_disk_opts ~img; *)
+          ]))

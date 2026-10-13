@@ -1,8 +1,20 @@
+open Rh_path
+
 type error =
-  | Parser of string
-  | Checksum_mismatch of Sha256.t * Sha256.t
   | Download_failed of int * string
-  | Sys_error of string
+  | System of string
+  | Cache of Path.t * string
+  | Not_found of Path.t
+  | Unavailable of Path.t
+  | Permissions of Path.t
+  | Is_dir of Path.t
+  | No_parent
+  | Verification of Path.t
+  | Always_download
+  | Other of Path.t
 
 val pp_error : Format.formatter -> error -> unit [@@ocaml.toplevel_printer]
-val run : unit -> (unit, error) result
+
+type t = Local of Path.t | Both of Path.t * string
+
+val file: ?verify:(Path.t -> (unit, error) result) -> t -> (Path.t, error) result

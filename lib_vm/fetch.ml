@@ -1,85 +1,95 @@
 module List = ListLabels
-
-let void_url = ""
-
-let checksum_url =
-  String.concat "https://repo-default.voidlinux.org/live/current/"
-    [ void_url; "sha256sum.txt" ]
-
-let iso_re =
-  Re.compile (Re.Pcre.re "(void-live-x86_64-\\d{8}-base\\.iso).{4}(.*)")
+open Rh_path
+open Result.Syntax
 
 type error =
-  | Parser of string
-  | Checksum_mismatch of Sha256.t * Sha256.t
   | Download_failed of int * string
-  | Sys_error of string
+  | System of string
+  | Cache of Path.t * string
+  | Not_found of Path.t
+  | Unavailable of Path.t
+  | Permissions of Path.t
+  | Is_dir of Path.t
+  | No_parent
+  | Verification of Path.t
+  | Always_download
+  | Other of Path.t
 
 let pp_error fmt = function
-  | Parser s -> Format.fprintf fmt "Parser error:\n%s\n" s
-  | Checksum_mismatch (a, b) ->
-      Format.fprintf fmt "\nChecksum mismatch:\n\n%s\n\n%s\n\n  "
-        (Sha256.to_hex a) (Sha256.to_hex b)
   | Download_failed (code, s) ->
       Format.fprintf fmt "Download failed with code %d: %s\n" code s
-  | Sys_error s -> Format.fprintf fmt "Sys_error: %s\n" s
+  | System s -> Format.fprintf fmt "Sys_error: %s\n" s
+  | Cache (p, s) ->
+      Format.fprintf fmt "Failed to write to %s\n Error: %s\n"
+        (Path.to_string p) s
+  | Not_found p -> Format.fprintf fmt "File not found: %s\n" (Path.to_string p)
+  | Unavailable p ->
+      Format.fprintf fmt "Permission denied: %s\n" (Path.to_string p)
+  | Permissions p ->
+      Format.fprintf fmt "Permission denied: %s\n" (Path.to_string p)
+  | Is_dir p -> Format.fprintf fmt "Is directory: %s\n" (Path.to_string p)
+  | No_parent -> print_endline "Path has no parent"
+  | Verification p ->
+      Format.fprintf fmt "Failed verification: %s\n" (Path.to_string p)
+  | Always_download -> print_endline "Always download"
+  | Other p -> Format.fprintf fmt "File error - other: %s\n" (Path.to_string p)
 
-let ( let* ) = Result.bind
+type t = Local of Path.t | Both of Path.t * string
 
-let fetch_checksums () =
-  Format.printf "Fetching checksums from %s\n" checksum_url;
-  let res = Ezcurl.get ~url:checksum_url () in
-  match res with
-  | Ok s ->
-      if s.code = 200 then Ok s.body
-      else Error (Download_failed (s.code, checksum_url))
-  | Error (code, _) ->
-      Error (Download_failed (Curl.int_of_curlCode code, checksum_url))
-
-let name_and_checksum checksums =
-  Format.printf "Parsing filename and checksum\n";
-  let* groups =
-    try Ok (Re.exec iso_re checksums)
-    with Not_found -> Error (Parser "Groups not found")
+let local_file ?verify path =
+  let rec aux n path =
+    match Unix.stat (Path.to_string path) with
+    | stats when stats.st_kind = S_REG && stats.st_perm >= 0o600 -> (
+        match verify with
+        | Some f -> ( match f path with Ok () -> Ok path | Error e -> Error e)
+        | None -> Ok path)
+    | stats when stats.st_kind = S_DIR -> Error (Is_dir path)
+    | exception Unix.Unix_error (EACCES, _, _) -> Error (Permissions path)
+    | exception Unix.Unix_error (ENOENT, _, _) -> Error (Not_found path)
+    | exception Unix.Unix_error (EAGAIN, _, _) ->
+        if n > 5 then Error (Unavailable path) else aux (n + 1) path
+    | _ -> Error (Other path)
   in
-  match (Re.Group.get groups 1, Re.Group.get groups 2) with
-  | name, checksum ->
-      Format.printf "Name: %s\nChecksum: %s\n" name checksum;
-      Ok (name, checksum)
-  | exception Not_found ->
-      Error (Parser "Failed to parse file name and checksum")
+  aux 0 path
 
-let check_iso name checksum =
-  Format.printf "Verifying SHA256 of ISO on disk\n";
-  let open Rh_path in
-  let iso_path = Path.append [ name ] Config.iso_dir in
-  let url_cs = Sha256.of_hex checksum in
-  match Sha256.file (Path.to_string iso_path) with
-  | v ->
-      if Sha256.equal v url_cs then Ok ()
-      else Error (Checksum_mismatch (url_cs, v))
-  | exception Sys_error s -> Error (Sys_error s)
+let cache ~path bytes =
+  match
+    Out_channel.with_open_bin (Path.to_string path) (fun oc ->
+        Out_channel.output_bytes oc bytes)
+  with
+  | () -> Ok ()
+  | exception Sys_error s -> Error (Cache (path, s))
 
-let fetch_iso name checksum =
-  Format.printf "Fetching ISO\n";
-  let open Rh_path in
-  let dest = Path.append [ name ] Config.iso_dir in
-  let url = String.concat "" [ void_url; name ] in
+let part_of ~path =
+  match Path.parent path with
+  | Some parent ->
+      let basename = Path.filename path ^ ".part" in
+      Ok (Path.append [ basename ] parent)
+  | None -> Error No_parent
+
+let remote_file ~path url =
+  Format.printf "Fetching remote file from %s\n%!" url;
   let res = Ezcurl.get ~url () in
-  let* () =
-    match res with
-    | Ok c ->
-        Ok
-          (Out_channel.with_open_bin (Path.to_string dest) (fun oc ->
-               Out_channel.output_bytes oc (Bytes.of_string c.Ezcurl_core.body)))
-    | Error (code, _) ->
-        Error (Download_failed (Curl.int_of_curlCode code, url))
-  in
-  check_iso name checksum
+  match res with
+  | Ok s when s.code = 200 -> (
+      let* part = part_of ~path in
+      match cache ~path:part (Bytes.of_string s.body) with
+      | _ -> (
+          match local_file part with
+          | Ok _ ->
+              Sys.rename (Path.to_string part) (Path.to_string path);
+              Ok path
+          | Error e -> Error e))
+  | Ok s -> Error (Download_failed (s.code, url))
+  | Error (code, _) -> Error (Download_failed (Curl.int_of_curlCode code, url))
 
-let run () =
-  let* txt = fetch_checksums () in
-  let* name, checksum = name_and_checksum txt in
-  match check_iso name checksum with
-  | Ok () -> Ok ()
-  | Error _ -> fetch_iso name checksum
+let file ?verify resource =
+  match resource with
+  | Local path -> local_file ?verify path
+  | Both (path, url) -> (
+      match local_file path with
+      | Ok p -> Ok p
+      | Error _ -> (
+          match remote_file ~path url with
+          | Ok p -> Ok p
+          | Error _ -> failwith "Fatal error: unable to fetch file"))
