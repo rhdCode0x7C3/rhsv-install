@@ -3,7 +3,8 @@ open Rh_path
 open Result.Syntax
 
 type error =
-  | Download_failed of int * string
+  | Bad_response of int * string
+  | Download_failed of string * string
   | System of string
   | Cache of Path.t * string
   | Not_found of Path.t
@@ -12,84 +13,97 @@ type error =
   | Is_dir of Path.t
   | No_parent
   | Verification of Path.t
-  | Always_download
+  | Malformed_url of string
   | Other of Path.t
 
 let pp_error fmt = function
-  | Download_failed (code, s) ->
+  | Bad_response (code, s) ->
       Format.fprintf fmt "Download failed with code %d: %s\n" code s
+  | Download_failed (s, url) ->
+      Format.fprintf fmt "Download failed:\nURL: %s\nMessage: %s" url s
   | System s -> Format.fprintf fmt "Sys_error: %s\n" s
   | Cache (p, s) ->
-      Format.fprintf fmt "Failed to write to %s\n Error: %s\n"
-        (Path.to_string p) s
-  | Not_found p -> Format.fprintf fmt "File not found: %s\n" (Path.to_string p)
-  | Unavailable p ->
-      Format.fprintf fmt "Permission denied: %s\n" (Path.to_string p)
-  | Permissions p ->
-      Format.fprintf fmt "Permission denied: %s\n" (Path.to_string p)
-  | Is_dir p -> Format.fprintf fmt "Is directory: %s\n" (Path.to_string p)
+      Format.fprintf fmt "Failed to write to %a\n Error: %s\n" Path.pp p s
+  | Not_found p -> Format.fprintf fmt "File not found: %a\n" Path.pp p
+  | Unavailable p -> Format.fprintf fmt "Unavailable: %a\n" Path.pp p
+  | Permissions p -> Format.fprintf fmt "Permission denied: %a\n" Path.pp p
+  | Is_dir p -> Format.fprintf fmt "Is directory: %a\n" Path.pp p
   | No_parent -> print_endline "Path has no parent"
-  | Verification p ->
-      Format.fprintf fmt "Failed verification: %s\n" (Path.to_string p)
-  | Always_download -> print_endline "Always download"
-  | Other p -> Format.fprintf fmt "File error - other: %s\n" (Path.to_string p)
+  | Verification p -> Format.fprintf fmt "Failed verification: %a\n" Path.pp p
+  | Malformed_url url -> Format.fprintf fmt "Malformed URL: %s\n" url
+  | Other p -> Format.fprintf fmt "File error - other: %a\n" Path.pp p
 
-type t = Local of Path.t | Both of Path.t * string
+type _ t =
+  | Local : Path.t -> [> `local ] t
+  | Remote : string -> [> `remote ] t
+  | Both : Path.t * string -> [> `both | `remote ] t
 
-let local_file ?verify path =
-  let rec aux n path =
-    match Unix.stat (Path.to_string path) with
-    | stats when stats.st_kind = S_REG && stats.st_perm >= 0o600 -> (
-        match verify with
-        | Some f -> ( match f path with Ok () -> Ok path | Error e -> Error e)
-        | None -> Ok path)
-    | stats when stats.st_kind = S_DIR -> Error (Is_dir path)
-    | exception Unix.Unix_error (EACCES, _, _) -> Error (Permissions path)
-    | exception Unix.Unix_error (ENOENT, _, _) -> Error (Not_found path)
-    | exception Unix.Unix_error (EAGAIN, _, _) ->
-        if n > 5 then Error (Unavailable path) else aux (n + 1) path
-    | _ -> Error (Other path)
+let filename url =
+  match String.split_last ~sep:"/" url with
+  | Some (_, fn) -> Ok fn
+  | None -> Error (Malformed_url url)
+
+let path_of = function
+  | Local path | Both (path, _) -> Ok path
+  | Remote url ->
+      let* fn = filename url in
+      Ok (Path.append [ fn ] Config.data_dir)
+
+let part_of =
+  let random_string length =
+    let buf = Buffer.create length in
+    for _ = 1 to length do
+      Buffer.add_char buf (Char.chr (97 + Random.int 26))
+    done;
+    Buffer.contents buf
   in
-  aux 0 path
+  function
+  | Local path | Both (path, _) -> Ok path
+  | Remote url ->
+      let* fn = filename url in
+      let part_nm = fn ^ random_string 16 in
+      Ok (Path.append [ part_nm ] Config.data_dir)
 
-let cache ~path bytes =
-  match
-    Out_channel.with_open_bin (Path.to_string path) (fun oc ->
-        Out_channel.output_bytes oc bytes)
-  with
-  | () -> Ok ()
-  | exception Sys_error s -> Error (Cache (path, s))
+let download ?path url =
+  let final_path =
+    match path with
+    | Some path -> Ok path
+    | None ->
+        let* fn = filename url in
+        Ok (Path.append [ fn ] Config.data_dir)
+  in
+  let oc p = open_out_bin (Path.to_string p) in
+  let cleanup oc path () =
+    close_out_noerr oc;
+    try Sys.remove (Path.to_string path) with _ -> ()
+  in
+  let write_into oc : Ezcurl.input_stream =
+    object
+      method on_input = output oc
 
-let part_of ~path =
-  match Path.parent path with
-  | Some parent ->
-      let basename = Path.filename path ^ ".part" in
-      Ok (Path.append [ basename ] parent)
-  | None -> Error No_parent
-
-let remote_file ~path url =
-  Format.printf "Fetching remote file from %s\n%!" url;
-  let res = Ezcurl.get ~url () in
+      method on_close =
+        fun () ->
+          flush oc;
+          close_out oc
+    end
+  in
+  let* part = part_of (Remote url) in
+  let oc = oc part in
+  let write_into = write_into oc in
+  let res = Ezcurl.http_stream ~url ~meth:Ezcurl.GET ~write_into () in
   match res with
-  | Ok s when s.code = 200 -> (
-      let* part = part_of ~path in
-      match cache ~path:part (Bytes.of_string s.body) with
-      | _ -> (
-          match local_file part with
-          | Ok _ ->
-              Sys.rename (Path.to_string part) (Path.to_string path);
-              Ok path
-          | Error e -> Error e))
-  | Ok s -> Error (Download_failed (s.code, url))
-  | Error (code, _) -> Error (Download_failed (Curl.int_of_curlCode code, url))
+  | exception _ ->
+      cleanup oc part ();
+      Error (Download_failed (url, "Ezcurl raised an exception"))
+  | Ok r when r.code = 200 -> (
+      let* path = final_path in
+      try
+        Sys.rename (Path.to_string part) (Path.to_string path);
+        Ok path
+      with _ -> Error (System "Sys.rename raised an exception"))
+  | Ok r -> Error (Bad_response (r.code, url))
+  | Error (_, s) -> Error (Download_failed (url, s))
 
-let file ?verify resource =
-  match resource with
-  | Local path -> local_file ?verify path
-  | Both (path, url) -> (
-      match local_file path with
-      | Ok p -> Ok p
-      | Error _ -> (
-          match remote_file ~path url with
-          | Ok p -> Ok p
-          | Error _ -> failwith "Fatal error: unable to fetch file"))
+let cache : [< `remote | `both ] t -> (Path.t, error) result = function
+  | Remote url -> download url
+  | Both (path, url) -> download url ~path
